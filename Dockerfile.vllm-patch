@@ -1,0 +1,43 @@
+# =============================================================================
+# vllm-patched - sm_121 (Blackwell GB10) workaround on top of upstream vLLM
+# =============================================================================
+# Use this Dockerfile only when the host NVIDIA driver is < 590.44. Once you
+# upgrade the host driver to >= 590.44, switch back to NVIDIA's Spark-tuned
+# image `nvcr.io/nvidia/vllm:25.12.post1-py3` (set VLLM_IMAGE in .env) and
+# delete this image: `docker image rm vllm-patched:qwen3.5`.
+#
+# The two patches applied here:
+#   1. Upgrade `transformers` + `tokenizers` so Qwen3-MoE / Qwen3-Coder-MoE
+#      architectures are recognized.
+#   2. Force `cutlass_block_fp8_supported() -> False` in vLLM so FP8 dense
+#      GEMM falls back to the Triton path (the upstream binary lacks
+#      sm_121 CUTLASS kernels and would otherwise crash at runtime with
+#      "RuntimeError: Error Internal" during the model warmup).
+#
+# Build:
+#   docker build -f Dockerfile.vllm-patch -t vllm-patched:qwen3.5 .
+#
+# Verify the patch:
+#   docker run --rm --entrypoint python3 vllm-patched:qwen3.5 -c \
+#     "from vllm.model_executor.layers.quantization.utils.w8a8_utils \
+#      import cutlass_block_fp8_supported; \
+#      print('cutlass_block_fp8_supported():', cutlass_block_fp8_supported())"
+# Expected output: cutlass_block_fp8_supported(): False
+# =============================================================================
+
+FROM vllm/vllm-openai:latest
+
+# Pin a transformers/tokenizers floor that knows about Qwen3-MoE / Qwen3-Coder
+# architectures. The OR-fallback covers the rare case where the index doesn't
+# yet have the pinned version.
+RUN pip install --no-cache-dir --upgrade 'transformers>=4.51.0' 'tokenizers>=0.21' \
+    || pip install --no-cache-dir --upgrade transformers tokenizers
+
+# sm_121 / GB10 workaround: redirect block-FP8 CUTLASS GEMM to Triton.
+# Done as an in-place sed so we don't need to ship a Python overlay file.
+RUN W=/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/utils/w8a8_utils.py \
+    && sed -i 's|^def cutlass_block_fp8_supported() -> bool:|def cutlass_block_fp8_supported() -> bool:\n    return False  # GB10/sm_121 patch: precompiled cutlass kernels lack sm_121|' "$W" \
+    && grep -A3 'def cutlass_block_fp8_supported' "$W" | head -5
+
+# Keep the base image's `vllm serve` entrypoint so `docker-compose.yml`
+# can pass the positional model arg + flags as before.

@@ -1,0 +1,38 @@
+# =============================================================================
+# Model weights (gigabytes; do not commit, but DO commit the directory names
+# so the repo structure is preserved on a fresh clone).
+# =============================================================================
+models/**/*.safetensors
+models/**/*.bin
+models/**/*.gguf
+models/**/*.onnx
+models/**/*.pt
+models/**/*.pth
+models/**/*.msgpack
+models/**/*.h5
+models/**/.cache/
+models/**/.download_complete
+
+# Keep the per-model READMEs / tokenizer configs / chat templates in source
+# control so the catalogue is browsable without the weights.
+!models/**/README.md
+!models/**/*.json
+!models/**/*.txt
+!models/**/*.md
+
+# Ollama-managed blobs are runtime state, not source.
+ollama-data/
+
+# Local environment overrides (HF_TOKEN, port overrides, etc.)
+.env
+.env.local
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+__pycache__/
+*.pyc

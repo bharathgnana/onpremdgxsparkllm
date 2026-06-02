@@ -1,0 +1,180 @@
+# =============================================================================
+# onpremdgxsparkllm - on-prem LLM serving stack for DGX Spark (Blackwell GB10)
+# =============================================================================
+# vLLM    - primary LLM (chat, coding, agent tool calls, RAG)
+# Ollama  - auxiliary (embeddings + vision OCR fallback)
+#
+# Clients (FastAPI backends, Claude CLI, Cursor, etc.) consume:
+#   - http://localhost:8000     (vLLM; OpenAI + Anthropic API surfaces)
+#   - http://localhost:11434    (Ollama)
+#
+# From inside another docker-compose project on the same host, add:
+#   extra_hosts: ["host.docker.internal:host-gateway"]
+# and target host.docker.internal:8000 / :11434.
+# =============================================================================
+
+services:
+
+  # ============================================================================
+  # Ollama - embeddings + vision OCR fallback
+  # ============================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: onprem-ollama
+    runtime: nvidia
+    volumes:
+      - ./ollama-data:/root/.ollama
+    ports:
+      # Bind on all interfaces so both the host (Claude CLI, curl, IDEs) AND
+      # sibling docker-compose projects on this host (reaching us via
+      # host.docker.internal -> docker0 bridge IP, not 127.0.0.1) can connect.
+      # The DGX workstation is firewalled at the network level, so exposing
+      # these ports on the LAN gateway interface is not a concern.
+      - "${OLLAMA_BIND:-0.0.0.0}:11434:11434"
+    networks:
+      - llm-network
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-4}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-2}
+      - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_NUM_GPU=999
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-65536}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # ============================================================================
+  # Ollama model initialization (one-shot; pulls mxbai-embed-large if absent)
+  # ============================================================================
+  # The Qwen3-Coder model that used to live in Ollama has been removed --
+  # vLLM serves the chat/coding model now. This init only ensures the
+  # embedding model is present. llama3.2-vision (~7 GB) is pulled on demand
+  # by the application backend when an OCR fallback is needed.
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: onprem-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - llm-network
+    entrypoint: >
+      sh -c "echo 'Ensuring mxbai-embed-large is present...' &&
+             curl -fsS -X POST http://ollama:11434/api/pull
+                  -d '{\"name\": \"mxbai-embed-large\"}' >/dev/null &&
+             echo 'mxbai-embed-large ready'"
+    restart: "no"
+
+  # ============================================================================
+  # vLLM - Unified LLM Inference (DGX Spark / Blackwell GB10 / SM_121)
+  # ============================================================================
+  # High-throughput, OpenAI-compatible inference with continuous batching,
+  # PagedAttention, and prefix caching. Serves /v1/chat/completions (OpenAI)
+  # AND /v1/messages (Anthropic).
+  #
+  # Image: vllm-patched:qwen3.5 (locally built; vLLM 0.13.0 with sm_121 patch
+  # to redirect CUTLASS FP8 GEMM to the Triton path).
+  #
+  #   Why not the NVIDIA Spark-tuned image (nvcr.io/nvidia/vllm:25.12.post1)?
+  #   That image requires NVIDIA driver >= 590.44 with no compatibility mode.
+  #   This host runs 580.95.05, so we fall back to the patched upstream
+  #   image we built in `Dockerfile.vllm-patch`. Once the driver is upgraded,
+  #   swap to nvcr.io/nvidia/vllm:25.12.post1-py3 to gain FlashInfer MoE FP8
+  #   + FlashAttention + native CUDA-graph capture (drop --enforce-eager,
+  #   drop VLLM_ATTENTION_BACKEND=TRITON_ATTN, drop the patched image).
+  #
+  # Model: Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8 (~30 GB on-disk, 3B active)
+  #   - Coder-tuned post-train from Qwen3-Instruct.
+  #   - Native qwen3_coder tool-call parser for agentic workflows.
+  #   - Pre-download to ./models/qwen3-coder-30b-a3b-instruct-fp8/
+  #
+  # Parked models (kept in ./models for future reactivation):
+  #   - qwen3.5-35b-a3b-fp8.parked       (waiting for Qwen3.5 MoE arch support)
+  #   - qwen3-30b-a3b-instruct-fp8.parked (previous general-instruct model)
+  # ============================================================================
+  vllm:
+    image: ${VLLM_IMAGE:-vllm-patched:qwen3.5}
+    container_name: onprem-vllm
+    runtime: nvidia
+    ipc: host
+    shm_size: "16gb"
+    volumes:
+      - ./models:/models:ro
+    ports:
+      # See OLLAMA_BIND note above. Same rationale: bind on all interfaces
+      # so sibling docker-compose stacks (reaching us via host-gateway) can
+      # connect, while still being addressable as localhost:8000 from the
+      # host itself for Claude CLI / Cursor / curl.
+      - "${VLLM_BIND:-0.0.0.0}:8000:8000"
+    networks:
+      - llm-network
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Triton JIT arch hint for sm_121 (Blackwell GB10) kernels
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+      # sm_121 workaround (patched image): FlashInfer attention kernels are
+      # precompiled without sm_121 binaries. Triton attention backend
+      # JIT-compiles for sm_121 and works on Blackwell consumer chips.
+      - VLLM_ATTENTION_BACKEND=TRITON_ATTN
+      - VLLM_USE_FLASHINFER_MXFP4_MOE=1
+      - HF_HUB_OFFLINE=1
+      - HF_HOME=/root/.cache/huggingface
+    # vllm/vllm-openai-derived images use `vllm serve` as entrypoint, so the
+    # command starts with the positional model arg, then options.
+    command:
+      - "${VLLM_MODEL_PATH:-/models/qwen3-coder-30b-a3b-instruct-fp8}"
+      - "--served-model-name"
+      - "${VLLM_MODEL:-qwen3-coder-30b}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      # 64K context: Claude Code's system prompt + tool schemas can be ~28K
+      # tokens with `max_tokens=32000` for the response. 32K wasn't enough;
+      # the model itself supports 256K, so we have headroom.
+      - "--max-model-len"
+      - "${VLLM_MAX_MODEL_LEN:-65536}"
+      - "--gpu-memory-utilization"
+      - "${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
+      # 8 concurrent seqs at 64K context fits within the ~55 GB KV-cache
+      # budget. Drop to 4 if you bump max-model-len to 131072, raise to 16
+      # if you lower max-model-len back to 32768.
+      - "--max-num-seqs"
+      - "${VLLM_MAX_NUM_SEQS:-8}"
+      - "--enable-prefix-caching"
+      - "--enable-chunked-prefill"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_coder"
+      - "--kv-cache-dtype"
+      - "${VLLM_KV_CACHE_DTYPE:-fp8}"
+      - "--dtype"
+      - "auto"
+      - "--trust-remote-code"
+      # sm_121 workaround (patched image): PyTorch only supports up to sm_120
+      # in this image; torch.compile + Inductor CUDA-graph capture raises
+      # "RuntimeError: Error Internal" during profile_run. --enforce-eager
+      # skips graph capture (kernels still run via Triton JIT) at the cost
+      # of ~30% single-stream throughput. Drop this flag when migrating to
+      # nvcr.io/nvidia/vllm:25.12.post1-py3 (requires driver >= 590.44).
+      - "--enforce-eager"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # model load + CUDA-graph capture is ~3 min on first start
+    restart: unless-stopped
+
+networks:
+  llm-network:
+    driver: bridge
+    name: llm-network
