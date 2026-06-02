@@ -110,13 +110,18 @@ sequence at FP8 is roughly 96 KB/token for Qwen3-MoE.
 | max-model-len | KV per seq | max sequences in 55 GB |
 |---|---|---|
 | 32768 | 3.1 GB | ~17 |
-| 65536 | 6.3 GB | ~8 (current) |
+| 65536 | 6.3 GB | ~8 |
 | 131072 | 12.6 GB | ~4 |
-| 262144 | 25.2 GB | ~2 |
+| 262144 | 25.2 GB | ~4 (current; vLLM-measured ~4.35x, prefix-caching adds effective headroom) |
 
-Claude Code's typical system prompt + tool schemas land near 28 K
-tokens, which is why we ship 65 K as the default (32 K isn't enough;
-131 K halves the agent count for marginal benefit).
+Earlier we ran with 65K context, but Claude Code (v2.x) hard-codes
+`max_tokens=32000` per request and a long session can grow the input
+side beyond 33 K, at which point vLLM (correctly) rejects the request
+with HTTP 400. Ollama silently truncates in that case, which is why
+this only became visible after the migration. Provisioning the full
+256 K native window removes the failure mode entirely; the cost is the
+concurrent-sequence drop from 8 to 4, which is still sufficient for
+2-3 simultaneous Claude CLI / Cursor agents on this workstation.
 
 ### `--enforce-eager` vs CUDA graphs
 

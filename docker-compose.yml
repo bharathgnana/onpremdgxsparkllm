@@ -137,18 +137,25 @@ services:
       - "0.0.0.0"
       - "--port"
       - "8000"
-      # 64K context: Claude Code's system prompt + tool schemas can be ~28K
-      # tokens with `max_tokens=32000` for the response. 32K wasn't enough;
-      # the model itself supports 256K, so we have headroom.
+      # 256K context: max native context length of Qwen3-Coder-30B-A3B.
+      # Claude Code (v2.x) hard-codes max_tokens=32000 per request and the
+      # input side (CLAUDE.md + tool schemas + chat history) grows over a
+      # long session (we have seen ~38K-50K input). vLLM enforces the
+      # OpenAI invariant `input + max_tokens <= max-model-len`, so we
+      # provision the full native window to avoid mid-session 400s as
+      # context grows.
       - "--max-model-len"
-      - "${VLLM_MAX_MODEL_LEN:-65536}"
+      - "${VLLM_MAX_MODEL_LEN:-262144}"
       - "--gpu-memory-utilization"
       - "${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
-      # 8 concurrent seqs at 64K context fits within the ~55 GB KV-cache
-      # budget. Drop to 4 if you bump max-model-len to 131072, raise to 16
-      # if you lower max-model-len back to 32768.
+      # KV-cache budget on Spark with the model loaded is ~55 GB at FP8.
+      # vLLM measures max concurrency at 256K context to be ~4x (with
+      # prefix-caching this is effectively higher in practice as agents
+      # share long system prompts). 4 concurrent sequences is the right
+      # cap for 2-3 simultaneous Claude CLI / Cursor agents. Raise to 8
+      # if you drop max-model-len back to 131072; to 16 at 65536.
       - "--max-num-seqs"
-      - "${VLLM_MAX_NUM_SEQS:-8}"
+      - "${VLLM_MAX_NUM_SEQS:-4}"
       - "--enable-prefix-caching"
       - "--enable-chunked-prefill"
       - "--enable-auto-tool-choice"
