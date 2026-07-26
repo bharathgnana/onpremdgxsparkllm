@@ -36,3 +36,12 @@ ollama-data/
 .vscode/
 __pycache__/
 *.pyc
+
+# Runtime output from the hybrid reviewer and edge benchmarks.
+.claude/glm-reviews/
+.bench/
+models/**/.coli*
+models/**/.download.log
+
+# Local rolling context for Codex sessions; may contain host/runtime details.
+CODEX_REPO_CONTEXT.md

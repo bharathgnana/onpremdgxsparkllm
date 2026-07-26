@@ -1,0 +1,10 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://SPARK_WIFI_IP:8001",
+    "ANTHROPIC_AUTH_TOKEN": "SAME_AS_COLI_API_KEY_ON_SPARK",
+    "ANTHROPIC_MODEL": "glm-5.2-colibri",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2-colibri",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2-colibri",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.2-colibri"
+  }
+}

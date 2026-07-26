@@ -4,13 +4,21 @@ This repo deploys a self-contained on-prem LLM stack tuned for a single
 NVIDIA DGX Spark workstation (Blackwell GB10, 128 GB UMA, SM 12.1,
 memory bandwidth 273 GB/s).
 
+The current production mode is the co-resident hybrid profile: Qwen uses a
+64k, single-sequence memory budget for interactive coding, while GLM-5.2 runs
+as a bounded asynchronous verifier. The 256k/four-sequence figures later in
+this document describe the standalone vLLM profile.
+
 ## Topology
 
 ```mermaid
 flowchart LR
-  cli["Claude CLI / Cursor / aider"] -->|"localhost:8000<br/>(OpenAI + Anthropic shapes)"| vllm
+  cli["Claude Code"] -->|"localhost:8002<br/>(Anthropic compatibility)"| proxy
+  proxy["system-message normalizer"] --> vllm
+  openai["Cursor / aider / app clients"] -->|"localhost:8000<br/>(OpenAI shape)"| vllm
   app["App backends<br/>(any docker-compose project)"] -->|"host.docker.internal:8000"| vllm
   app -->|"host.docker.internal:11434<br/>embeddings + vision"| ollama
+  reviewer["async review worker"] --> glm["Colibrì GLM-5.2<br/>host service :8001"]
   subgraph stack [onpremdgxsparkllm compose project]
     vllm["vLLM<br/>qwen3-coder-30b<br/>FP8 weights, FP8 KV cache"]
     ollama["Ollama<br/>mxbai-embed-large<br/>llama3.2-vision (on-demand)"]
@@ -29,8 +37,8 @@ flowchart LR
   long system prompt (Claude CLI's ~28 K-token preamble repeats every
   request).
 - Serves both `/v1/chat/completions` (OpenAI) and `/v1/messages`
-  (Anthropic) over the same endpoint, so Claude CLI, Cursor, aider, and
-  in-house OpenAI clients all share one process.
+  (Anthropic). Claude Code goes through the port-8002 compatibility proxy;
+  Cursor, aider, and in-house OpenAI clients use port 8000 directly.
 - Native `qwen3_coder` tool-call parser allows agentic frameworks to
   bind directly to the model's training format.
 

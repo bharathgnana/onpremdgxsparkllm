@@ -1,0 +1,15 @@
+[Unit]
+Description=Asynchronous Qwen-to-GLM code review worker
+After=network-online.target colibri-glm52.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/test1/demos/onpremdgxsparkllm
+EnvironmentFile=-/home/test1/demos/onpremdgxsparkllm/.env
+ExecStart=/home/test1/demos/onpremdgxsparkllm/scripts/glm-review worker
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target

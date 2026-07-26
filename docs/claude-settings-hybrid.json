@@ -1,0 +1,35 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8002",
+    "ANTHROPIC_AUTH_TOKEN": "local-qwen",
+    "ANTHROPIC_MODEL": "qwen3-coder-30b",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "qwen3-coder-30b",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3-coder-30b",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3-coder-30b"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/test1/demos/onpremdgxsparkllm/scripts/glm-review-hook.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/test1/demos/onpremdgxsparkllm/scripts/glm-review-notify.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

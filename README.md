@@ -1,120 +1,115 @@
 # onpremdgxsparkllm
 
-Self-contained, reproducible on-prem LLM-serving stack for the NVIDIA DGX
-Spark (Blackwell GB10, SM 12.1, 128 GB UMA). Runs as an independent
-`docker compose` project and exposes a single network surface that any
-client application can consume.
+Self-contained on-prem inference for NVIDIA DGX Spark (Blackwell GB10,
+SM 12.1, 119 GiB usable unified memory). The supported agentic-coding profile
+runs Qwen3-Coder as the interactive lane and GLM-5.2 as a bounded,
+asynchronous verifier.
 
-## What this repo serves
+## Services
 
-| Endpoint | Service | Model | Used by |
+| Endpoint | Service | Model | Purpose |
 |---|---|---|---|
-| `http://127.0.0.1:8000/v1/chat/completions` | vLLM (OpenAI shape) | `qwen3-coder-30b` (Qwen3-Coder-30B-A3B-Instruct-FP8) | App backends, Cursor, aider, etc. |
-| `http://127.0.0.1:8000/v1/messages` | vLLM (Anthropic shape) | same | Claude CLI, Claude-API clients |
-| `http://127.0.0.1:11434/api/embeddings` | Ollama | `mxbai-embed-large` (1024-dim) | RAG pipelines |
-| `http://127.0.0.1:11434/api/chat` (vision) | Ollama | `llama3.2-vision:11b` (on-demand pull) | Vision OCR fallback |
+| `http://127.0.0.1:8000/v1/chat/completions` | vLLM | `qwen3-coder-30b` FP8 | OpenAI clients |
+| `http://127.0.0.1:8002/v1/messages` | Claude proxy → vLLM | `qwen3-coder-30b` FP8 | Claude Code |
+| `http://127.0.0.1:8001/v1/messages` | Colibrì | `glm-5.2-colibri` int4 | Async review |
+| `http://127.0.0.1:11434` | Ollama | embeddings and vision | RAG/OCR |
 
-vLLM handles all chat/coding/agent traffic (continuous batching, prefix
-caching, FP8 KV cache). Ollama stays around purely for embeddings + the
-vision OCR fallback that vLLM does not serve.
+Claude Code must use port `8002`, not direct vLLM port `8000`. The proxy
+normalizes hook-injected Anthropic system messages. GLM advice never blocks
+the editing loop.
 
 ## Quick start
 
 ```bash
 cp .env.example .env
-# edit HF_TOKEN in .env (needed only on first model download)
-
-./scripts/start.sh         # docker compose up -d
-./scripts/status.sh        # check what's running and which models are loaded
+./scripts/migrate_to_vllm.sh download
+./scripts/install-hybrid-services.sh
+./scripts/start-hybrid.sh
+./scripts/hybrid-status.sh
 ```
 
-First boot pulls a ~30 GB FP8 model from Hugging Face (or skips if you
-already moved the `models/qwen3-coder-30b-a3b-instruct-fp8/` directory in
-from another machine). vLLM cold-start takes ~3 min while it loads the
-model and captures CUDA graphs.
+The Qwen download is approximately 31 GB. GLM is a separate roughly 359 GB
+int4 download; see [docs/COLIBRI_GLM52.md](docs/COLIBRI_GLM52.md).
+`start-hybrid.sh` applies safe memory budgets, starts the proxy, waits for both
+lanes, and rolls back if Qwen cannot initialize.
 
-## How a client application consumes this
-
-### Same-host client running in Docker
-
-Add `host.docker.internal` to your client compose `extra_hosts` and point
-at the published ports:
-
-```yaml
-services:
-  my-backend:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - OLLAMA_HOST=host.docker.internal
-      - OLLAMA_PORT=11434
-      - VLLM_HOST=host.docker.internal
-      - VLLM_PORT=8000
-      - VLLM_MODEL=qwen3-coder-30b
-```
-
-### Same-host client running on the host (not Docker)
-
-Just use `localhost`:
+## Claude Code
 
 ```bash
-curl http://localhost:8000/v1/models
-curl http://localhost:11434/api/tags
+./scripts/claude-hybrid.sh
 ```
 
-### Claude CLI (Claude Code v2.x)
+This verified launcher selects `qwen3-coder-30b`, uses only
+`ANTHROPIC_AUTH_TOKEN`, and installs asynchronous GLM review hooks.
+Interactive `/init`, tool use, file creation, and a second prompt in the same
+session have been tested successfully.
+
+For another laptop, follow
+[docs/REMOTE_CLAUDE_QWEN.md](docs/REMOTE_CLAUDE_QWEN.md).
+
+OpenAI-compatible clients use port `8000` directly:
 
 ```bash
-# Persist in ~/.claude/settings.json:
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:8000",
-    "ANTHROPIC_API_KEY": "dummy",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL":   "qwen3-coder-30b",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3-coder-30b",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL":  "qwen3-coder-30b"
-  }
-}
+curl http://127.0.0.1:8000/v1/models
 ```
 
-Then just run `claude`.
+## Asynchronous GLM review
+
+The Claude `Stop` hook snapshots a bounded, redacted Git diff. The worker waits
+for Qwen to become idle and for at least 10 GiB available memory, compacts the
+packet with Qwen, asks GLM for an advisory review, and detects stale results.
+
+```bash
+./scripts/glm-review status
+./scripts/glm-review show JOB_ID
+./scripts/glm-review wait JOB_ID
+```
+
+Reports under `.claude/glm-reviews/` are ignored by Git.
+
+## Measured hybrid performance
+
+| Lane | Case | TTFT | Decode | Available memory |
+|---|---:|---:|---:|---:|
+| Qwen | approximate 20k | 3.535 s | 35.272 tok/s | 29.797 GiB |
+| GLM | bounded 2k | 213.452 s | 0.831 tok/s | 18.338 GiB |
+
+Qwen passed the interactive latency, memory, and 50/50 tool-call checks.
+GLM passed its ten-minute TTFT and memory bounds but missed the 3 tok/s stretch
+target, so it remains asynchronous.
 
 ## Repository layout
 
-```
+```text
 .
-|-- README.md                              # this file
-|-- docker-compose.yml                     # vllm + ollama + ollama-init
-|-- Dockerfile.vllm-patch                  # patched-image recipe (sm_121 fix)
-|-- .env.example                           # template for HF_TOKEN, knobs
-|-- models/                                # weights (gitignored)
-|   |-- qwen3-coder-30b-a3b-instruct-fp8/  # active
-|   |-- qwen3-30b-a3b-instruct-fp8.parked/ # general-instruct (previous active)
-|   `-- qwen3.5-35b-a3b-fp8.parked/        # waiting on vLLM Qwen3.5 MoE support
-|-- ollama-data/                           # ollama blob store (bind mount, gitignored)
+|-- docker-compose.yml                     # vLLM and Ollama
+|-- Dockerfile.vllm-patch                  # driver-580 / SM-121 fallback
+|-- models/
+|   |-- qwen3-coder-30b-a3b-instruct-fp8/  # interactive model
+|   `-- glm52-colibri-int4/                # async verifier
+|-- deploy/systemd/                        # user services and profiles
 |-- scripts/
-|   |-- start.sh                           # docker compose up wrapper
-|   |-- status.sh                          # quick health/inventory
-|   `-- migrate_to_vllm.sh                 # download/start/validate/switch/rollback
-`-- docs/
-    |-- VLLM_MIGRATION.md                  # detailed setup + tuning + troubleshooting
-    `-- ARCHITECTURE.md                    # why vLLM, why Ollama, sm_121 history
+|   |-- start-hybrid.sh                    # safe co-resident startup
+|   |-- claude-hybrid.sh                   # verified Claude launcher
+|   |-- anthropic-vllm-proxy.py            # request normalizer
+|   `-- glm_review.py                      # async queue
+`-- docs/                                  # architecture and operations
 ```
 
-## Why a separate repo
+## Operations
 
-- **Decoupling**: app repos point at endpoints (`http://localhost:8000`,
-  `http://localhost:11434`) instead of importing 90+ GB of model weights
-  and a vLLM service block.
-- **Reproducibility**: the patched-image Dockerfile, model download
-  scripts, parked-model history, and tuning knobs live in one place.
-- **Knowledge base**: the docs capture the migration history (Qwen3
-  Ollama -> Qwen3.5-FP8 vLLM -> Qwen3-Coder-30B vLLM), the sm_121
-  workarounds for driver 580.x, and the upgrade path to NVIDIA's
-  Spark-tuned image once the driver is bumped to >= 590.44.
+```bash
+./scripts/hybrid-status.sh
+./scripts/bench-edge.py --lane both --quick
+./scripts/quality-tools.py --count 50
+./scripts/stop-hybrid.sh
+```
 
-## See also
+## Further reading
 
-- [docs/VLLM_MIGRATION.md](docs/VLLM_MIGRATION.md) - full setup, tuning, troubleshooting
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - why this stack
+- [plan_ed.md](plan_ed.md) — design, gates, and measured outcome.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — hybrid and hardware architecture.
+- [docs/REMOTE_CLAUDE_QWEN.md](docs/REMOTE_CLAUDE_QWEN.md) — remote laptop setup.
+- [docs/COLIBRI_GLM52.md](docs/COLIBRI_GLM52.md) — GLM deployment.
+- [docs/COLIBRI_GPU_AND_DIAGNOSTICS.md](docs/COLIBRI_GPU_AND_DIAGNOSTICS.md) — GLM tuning.
+- [docs/VLLM_MIGRATION.md](docs/VLLM_MIGRATION.md) — standalone vLLM history.

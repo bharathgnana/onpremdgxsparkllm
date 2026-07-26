@@ -44,17 +44,17 @@ case "${cmd}" in
         if [[ -z "${HF_TOKEN_VAL}" ]]; then
             echo "WARN: no HF_TOKEN in ${ENV_FILE}; download may hit Hugging Face anon rate limits."
         fi
+        export HF_TOKEN="${HF_TOKEN_VAL}"
         docker run --rm \
             --name "${DOWNLOAD_CONTAINER}" \
             -v "${MODEL_DIR}:/model" \
-            -e "HF_TOKEN=${HF_TOKEN_VAL}" \
+            -e HF_TOKEN \
             python:3.12-slim \
             bash -c "pip install --quiet huggingface_hub && \
                      python -c 'from huggingface_hub import snapshot_download; \
                                 snapshot_download(repo_id=\"${MODEL_ID}\", \
                                                   local_dir=\"/model\", \
-                                                  max_workers=8, \
-                                                  resume_download=True)' && \
+                                                  max_workers=8)' && \
                      echo DOWNLOAD_COMPLETE > /model/.download_complete && \
                      echo DOWNLOAD_COMPLETE"
         echo "==> Done. Model size:"

@@ -1,0 +1,26 @@
+[Unit]
+Description=Colibrì GLM-5.2 OpenAI/Anthropic API (DGX Spark)
+Documentation=file:///home/test1/demos/onpremdgxsparkllm/docs/COLIBRI_GLM52.md
+After=network-online.target
+Wants=network-online.target
+# Do not start until the HF download finished (avoids restart loops).
+ConditionPathExists=/home/test1/demos/onpremdgxsparkllm/models/glm52-colibri-int4/.download_complete
+ConditionPathExists=/home/test1/demos/colibri/c/colibri
+
+[Service]
+Type=simple
+WorkingDirectory=/home/test1/demos/colibri
+Environment=COLIBRI_ROOT=/home/test1/demos/colibri
+Environment=COLI_MODEL=/home/test1/demos/onpremdgxsparkllm/models/glm52-colibri-int4
+Environment=COLIBRI_PORT=8001
+# Bind and COLI_API_KEY come from repo .env (start-colibri.sh loads it).
+EnvironmentFile=-/home/test1/demos/onpremdgxsparkllm/.env
+Environment=PATH=/home/test1/demos/colibri/c:/home/test1/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/test1/demos/onpremdgxsparkllm/scripts/start-colibri.sh
+Restart=on-failure
+RestartSec=120
+# First load + CUDA expert upload can take several minutes.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

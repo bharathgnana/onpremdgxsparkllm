@@ -172,6 +172,8 @@ vLLM serves **both** `/v1/chat/completions` (OpenAI shape) and
 
 ### Claude CLI (Claude Code v2.x)
 
+For the current hybrid deployment, prefer `./scripts/claude-hybrid.sh`; it routes through the required port-8002 compatibility proxy. The direct vLLM recipe below applies only to standalone vLLM without review-hook system-message injection.
+
 Claude Code v2.x no longer accepts arbitrary names via `--model` when an
 `ANTHROPIC_BASE_URL` is set; the CLI always routes traffic through the
 Opus/Sonnet/Haiku tier names and rejects `qwen3-coder-30b` client-side
@@ -180,8 +182,7 @@ the local model:
 
 ```bash
 ANTHROPIC_BASE_URL=http://localhost:8000 \
-ANTHROPIC_API_KEY=dummy \
-ANTHROPIC_AUTH_TOKEN=dummy \
+ANTHROPIC_AUTH_TOKEN=local-qwen \
 ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder-30b \
 ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder-30b \
 ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder-30b \
@@ -194,9 +195,8 @@ have to set the env vars each time:
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:8000",
-    "ANTHROPIC_API_KEY": "dummy",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_BASE_URL": "http://localhost:8002",
+    "ANTHROPIC_AUTH_TOKEN": "local-qwen",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "qwen3-coder-30b",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3-coder-30b",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3-coder-30b"
